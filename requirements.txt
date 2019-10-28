@@ -1,0 +1,4 @@
+paho-mqtt
+arrow
+psutil
+snipskit[hermes]==0.5.4
