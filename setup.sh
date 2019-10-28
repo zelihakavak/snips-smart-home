@@ -1,19 +1,29 @@
   
-VENV=venv
+#!/usr/bin/env bash
+set -e
 
-if [ ! -d "$VENV" ]
-then
-
-    PYTHON=`which python3`
-
-    if [ ! -f $PYTHON ]
-    then
-        echo "could not find python"
-    fi
-    virtualenv -p $PYTHON $VENV
-
+# Copy config.ini.default if it exists and config.ini doesn't exist.
+if [ -e config.ini.default ] && [ ! -e config.ini ]; then
+    cp config.ini.default config.ini
+    chmod a+w config.ini
 fi
 
-. $VENV/bin/activate
+PYTHON=$(command -v python3)
+VENV=venv
 
-pip install -r requirements.txt
+if [ -f "$PYTHON" ]; then
+
+    if [ ! -d $VENV ]; then
+        # Create a virtual environment if it doesn't exist.
+        $PYTHON -m venv $VENV
+    fi
+
+    # Activate the virtual environment and install requirements.
+    # shellcheck disable=SC1090
+    . $VENV/bin/activate
+    pip3 install wheel
+    pip3 install -r requirements.txt
+
+else
+    >&2 echo "Cannot find Python 3. Please install it."
+fi
