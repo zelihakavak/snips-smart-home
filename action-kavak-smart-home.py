@@ -1,68 +1,188 @@
-#!/usr/bin/env python2
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+"""
+This module contains a Snips app that answers questions about your Snips
+assistant.
+"""
+
+from datetime import datetime
+import importlib
+from pathlib import Path
+import socket
+from urllib.error import URLError
+
+import arrow
+import psutil
+
+from snipskit.apps import SnipsAppMixin
+from snipskit.hermes.apps import HermesSnipsApp
+from snipskit.hermes.decorators import intent
+from snipskit.services import version
+from snipskit.tools import latest_snips_version
+
+# Use the assistant's language.
+i18n = importlib.import_module('translations.' + SnipsAppMixin().assistant['language'])
 
 
-import ConfigParser
-import io
-import paho.mqtt.client as mqtt
-import random
-import json
+class AssistantInformation(HermesSnipsApp):
+    """
+    This app answers questions about your Snips assistant.
+    """
 
-CONFIGURATION_ENCODING_FORMAT = "utf-8"
-CONFIG_INI = "config.ini"
+    @intent(i18n.INTENT_ASSISTANT_APPS)
+    def handle_assistant_apps(self, hermes, intent_message):
+        """Handle the intent AssistantApps."""
 
-class SnipsConfigParser(ConfigParser.SafeConfigParser):
-    def to_dict(self):
-        return {section: {option_name: option for option_name, option in self.items(section)} for section in self.sections()}
+        # Look at the snippets directory and not in Snipsfile.yaml.
+        # The former also contains apps with inline snippets,
+        # the latter doesn't.
+        apps = [str(app) for app in (Path(self.assistant.filename).parent / 'snippets').iterdir()]
 
+        # Make the names more pronounceable.
+        # For instance: from 'koan.What_is_happening_on_this_day' to
+        # 'What is happening on this day'
+        apps = [app[app.find('.')+1:].replace('_', ' ') for app in apps]
 
-def read_configuration_file(configuration_file):
-    try:
-        with io.open(configuration_file, encoding=CONFIGURATION_ENCODING_FORMAT) as f:
-            conf_parser = SnipsConfigParser()
-            conf_parser.readfp(f)
-            return conf_parser.to_dict()
-    except (IOError, ConfigParser.Error) as e:
-        return dict()
+        # Tell "X, Y, and Z" instead of "X, Y, Z"
+        # We always have at least one app, otherwise this app wouldn't run...
+        # So we don't need to check for num_apps == 0.
+        num_apps = len(apps)
+        if num_apps == 1:
+            names_apps = apps[0]
+        else:
+            last_app = apps.pop()
+            names_apps = ', '.join(apps) + i18n.AND + last_app
 
+        result_sentence = i18n.RESULT_ASSISTANT_APPS.format(num_apps,
+                                                            names_apps)
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
 
-conf = read_configuration_file(CONFIG_INI)
-print("Conf:", conf)
+    @intent(i18n.INTENT_ASSISTANT_ID)
+    def handle_assistant_id(self, hermes, intent_message):
+        """Handle the intent AssistantID."""
 
-# MQTT client to connect to the bus
-mqtt_client = mqtt.Client()
+        # Spell out the individual letters of the ID
+        prefix, suffix = self.assistant['id'].split('_')
+        suffix = ' '.join(list(suffix))
+        project_id = prefix + '_' + suffix
 
-def on_connect(client, userdata, flags, rc):
-    client.subscribe("hermes/intent/#")
+        result_sentence = i18n.RESULT_ASSISTANT_ID.format(project_id)
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
 
+    @intent(i18n.INTENT_ASSISTANT_INTENTS)
+    def handle_assistant_intents(self, hermes, intent_message):
+        """Handle the intent AssistantIntents."""
+        number_of_intents = len(self.assistant['intents'])
 
-def message(client, userdata, msg):
-    data = json.loads(msg.payload.decode("utf-8"))
-    session_id = data['sessionId']
-    try:
-        user, intentname = data['intent']['intentName'].split(':')
+        result_sentence = i18n.RESULT_ASSISTANT_INTENTS.format(number_of_intents)
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
 
-        if intentname == 'turn_on':
-            answers = ['Alle Lampen im Wohnzimmer an.']
-            say(session_id, random.choice(answers))
-        elif intentname == 'turn_off':
-            answers = ['Alle Lampen im Wohnzimmer aus.']
-            say(session_id, random.choice(answers))
-    except KeyError:
-        pass
+    @intent(i18n.INTENT_ASSISTANT_NAME)
+    def handle_assistant_name(self, hermes, intent_message):
+        """Handle the intent AssistantName."""
+        name = self.assistant['name']
 
-def say(session_id, text):
-    mqtt_client.publish('hermes/dialogueManager/endSession',
-                        json.dumps({'text': text, "sessionId": session_id}))
+        result_sentence = i18n.RESULT_ASSISTANT_NAME.format(name)
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
 
+    @intent(i18n.INTENT_ASSISTANT_PLATFORM)
+    def handle_assistant_platform(self, hermes, intent_message):
+        """Handle the intent AssistantPlatform."""
+        platform = self.assistant['platform']['type'].replace('raspberrypi',
+                                                              i18n.REPLACE_TTS_RASPI)
 
+        result_sentence = i18n.RESULT_ASSISTANT_PLATFORM.format(platform)
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
+
+    @intent(i18n.INTENT_HOSTNAME)
+    def handle_hostname(self, hermes, intent_message):
+        """Handle the intent Hostname."""
+
+        result_sentence = i18n.RESULT_HOSTNAME.format(socket.gethostname())
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
+
+    @intent(i18n.INTENT_IP_ADDRESS)
+    def handle_ip_address(self, hermes, intent_message):
+        """Handle the intent IPAddress."""
+
+        # Based on https://stackoverflow.com/a/28950776/10368577
+        # This *should* work on Linux, macOS and Windows.
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # This doesn't even have to be reachable
+            s.connect(('10.255.255.255', 1))
+            ip_address = s.getsockname()[0]
+        except OSError:
+            ip_address = '127.0.0.1'
+        finally:
+            s.close()
+
+        try:
+            result_sentence = i18n.RESULT_IP_ADDRESS.format(i18n.tts_ip_address(ip_address))
+        except AttributeError:  # tts_ip_address not defined for this language
+            result_sentence = i18n.RESULT_IP_ADDRESS.format(ip_address)
+
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
+
+    @intent(i18n.INTENT_SNIPS_VERSION)
+    def handle_snips_version(self, hermes, intent_message):
+        """Handle the intent SnipsVersion."""
+        installed = version()
+
+        try:
+            result_sentence = i18n.RESULT_SNIPS_VERSION.format(i18n.tts_version(installed))
+        except AttributeError:  # tts_version not defined for this language
+            result_sentence = i18n.RESULT_SNIPS_VERSION.format(installed)
+
+        try:
+            latest = latest_snips_version()
+            if installed < latest:
+                result_sentence += i18n.RESULT_NEWER_VERSION_AVAILABLE
+        except URLError:
+            pass  # The user didn't ask for the latest version, so ignore it.
+        except AttributeError:  # RESULT_NEWER_VERSION_AVAILABLE not defined for this language
+            pass
+
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
+
+    @intent(i18n.INTENT_LATEST_SNIPS_VERSION)
+    def handle_latest_snips_version(self, hermes, intent_message):
+        """Handle the intent LatestSnipsVersion."""
+        try:
+            latest = latest_snips_version()
+            installed = version()
+            result_sentence = i18n.RESULT_LATEST_SNIPS_VERSION.format(i18n.tts_version(latest))
+            if installed < latest:
+                result_sentence += i18n.RESULT_OLDER
+        except URLError:
+            result_sentence = i18n.RESULT_NO_RELEASE_NOTES
+
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
+
+    @intent(i18n.INTENT_LATEST_SNIPS_VERSION_RUNNING)
+    def handle_latest_snips_version_running(self, hermes, intent_message):
+        """Handle the intent LatestSnipsVersionRunning."""
+        try:
+            latest = latest_snips_version()
+            installed = version()
+            if installed < latest:
+                result_sentence = i18n.RESULT_NOT_UPDATED.format(i18n.tts_version(installed),
+                                                                 i18n.tts_version(latest))
+            else:
+                result_sentence = i18n.RESULT_UPDATED.format(i18n.tts_version(installed))
+        except URLError:
+            result_sentence = i18n.RESULT_NO_RELEASE_NOTES
+
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
+
+    @intent(i18n.INTENT_UPTIME)
+    def handle_uptime(self, hermes, intent_message):
+        """Handle the intent Uptime."""
+        boot_time = datetime.fromtimestamp(psutil.boot_time())
+        uptime = arrow.get(boot_time).humanize(other=arrow.get(datetime.now()) ,locale=self.assistant['language'])
+
+        result_sentence = i18n.RESULT_UPTIME.format(uptime)
+        hermes.publish_end_session(intent_message.session_id, result_sentence)
 
 
 if __name__ == "__main__":
-    mqtt_client.on_connect = on_connect
-    mqtt_client.message_callback_add("hermes/intent/zeliha:turn_on/#", message)
-    print (message)
-    mqtt_client.message_callback_add("hermes/intent/zeliha:turn_off/#", message)
-    print (message)
-    mqtt_client.connect("localhost", "1883")
-    mqtt_client.loop_forever()
+    AssistantInformation()
