@@ -22,6 +22,7 @@ from snipskit.tools import latest_snips_version
 # Use the assistant's language.
 i18n = importlib.import_module('translations.' + SnipsAppMixin().assistant['language'])
 INTENT_TURN_ON = 'zeliha:turn_on'
+RESULT_ASSISTANT_NAME = 'einschalten'
 
 class AssistantInformation(HermesSnipsApp):
     """
